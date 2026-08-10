@@ -1,4 +1,4 @@
-  <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
@@ -967,6 +967,11 @@
     .month-bars { height: 140px; padding: 8px; gap: 3px; }
     .month-bar .bar-label { font-size: 0.6rem; }
 
+    /* 役職管理モーダルの新規追加フォーム */
+    .new-person-grid { grid-template-columns: 1fr !important; gap: 10px !important; }
+    .new-person-grid > div, .new-person-grid > button { width: 100%; }
+    .new-person-grid button { padding: 12px !important; font-size: 0.95rem !important; }
+
     /* フローティングアクションボタン (FAB) */
     .fab {
       display: flex !important;
@@ -1157,7 +1162,7 @@
       <option value="課長">🧑‍💼 課長</option>
       <option value="部長">🎖️ 部長</option>
     </select>
-    <button class="btn small secondary mobile-hide" onclick="openRoleManagerModal()" style="font-size:0.82rem">🔐 役職管理 ⭐</button>
+    <button class="btn small secondary" onclick="openRoleManagerModal()" style="font-size:0.82rem">🔐 役職・利用者管理 ⭐</button>
     <div id="currentUserMeta" style="font-size:0.82rem;color:#2c3e50;font-weight:500"></div>
   </div>
 
@@ -2382,7 +2387,7 @@ function openRoleManagerModal() {
   let html = `
     <div style="background:#f0f9ff;border-left:3px solid #3498db;border-radius:6px;padding:14px;margin-bottom:16px">
       <div style="font-weight:600;color:#2c3e50;margin-bottom:10px;font-size:0.95rem">➕ 新規利用者を追加</div>
-      <div style="display:grid;grid-template-columns:1.5fr 1fr 1fr 1fr 1fr auto;gap:8px;align-items:end">
+      <div class="new-person-grid" style="display:grid;grid-template-columns:1.5fr 1fr 1fr 1fr 1fr auto;gap:8px;align-items:end">
         <div>
           <label style="font-size:0.78rem;color:#555">名前 *</label>
           <input type="text" id="newPersonName" placeholder="例：山田太郎" style="width:100%;padding:8px;border:1px solid #dcdfe3;border-radius:6px">
@@ -5414,8 +5419,3 @@ render();
 </script>
 </body>
 </html>
-
-
-
-
- 
