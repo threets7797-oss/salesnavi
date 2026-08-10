@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+  <!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
@@ -1965,10 +1965,27 @@ function loadData() {
       });
       // 役職データ
       if (!parsed.roles || typeof parsed.roles !== 'object') parsed.roles = {};
+      // 利用者マスター（顧客と独立して登録可能）
+      if (!Array.isArray(parsed.people)) parsed.people = [];
       return parsed;
     }
   } catch (e) { console.warn('Load error', e); }
-  return { customers: [], meetings: [], roles: {} };
+  return { customers: [], meetings: [], roles: {}, people: [] };
+}
+
+// 全利用者名を取得（顧客担当者 + 利用者マスターの和集合）
+function getAllOwnerNames() {
+  const set = new Set();
+  data.customers.forEach(c => { if (c.owner) set.add(c.owner.trim()); });
+  (data.people || []).forEach(p => { if (p.name) set.add(p.name.trim()); });
+  set.delete('');
+  return [...set].sort();
+}
+
+// 利用者マスターから名前を検索（あればそのorg情報を返す）
+function findPersonInMaster(name) {
+  if (!name) return null;
+  return (data.people || []).find(p => p.name === name) || null;
 }
 
 // 現在時刻のISO文字列（updatedAt用）
@@ -2005,10 +2022,14 @@ function canViewScope(scope) {
 // 現在のユーザーの組織情報を取得
 function getCurrentUserMeta() {
   if (!currentUser) return { team: '', section: '', department: '' };
-  // 担当者名で過去レコードを検索して、最頻のチーム/課/部を抽出
+  // まず利用者マスターから探す（優先）
+  const master = findPersonInMaster(currentUser);
+  if (master) {
+    return { team: master.team || '', section: master.section || '', department: master.department || '' };
+  }
+  // なければ担当者名で過去レコードから最頻値を抽出
   const records = data.customers.filter(c => c.owner === currentUser);
   if (records.length === 0) return { team: '', section: '', department: '' };
-  // 最頻値
   const mode = (key) => {
     const counts = {};
     records.forEach(r => { const v = r[key] || ''; if (v) counts[v] = (counts[v] || 0) + 1; });
@@ -2115,11 +2136,16 @@ function refreshViewLevelSelect() {
 }
 
 function refreshUserSelect() {
-  const owners = [...new Set(data.customers.map(c => (c.owner || '').trim()).filter(Boolean))].sort();
+  const owners = getAllOwnerNames();
   const sel = document.getElementById('currentUserSelect');
+  if (!sel) return;
   const cur = sel.value;
-  sel.innerHTML = '<option value="">（未選択 / 全員表示）</option>' +
-    owners.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
+  if (owners.length === 0) {
+    sel.innerHTML = '<option value="">（利用者未登録）</option>';
+  } else {
+    sel.innerHTML = '<option value="">─── 選択してください ───</option>' +
+      owners.map(o => `<option value="${escapeHtml(o)}">👤 ${escapeHtml(o)}</option>`).join('');
+  }
   sel.value = cur || currentUser || '';
 }
 
@@ -2127,17 +2153,24 @@ function refreshUserMetaDisplay() {
   const container = document.getElementById('currentUserMeta');
   if (!container) return;
   if (!currentUser) {
-    container.innerHTML = '<span style="color:#7f8c8d">※ ユーザー未選択 — 全件表示中（管理者扱い）</span>';
+    const registeredCount = getAllOwnerNames().length;
+    if (registeredCount === 0) {
+      container.innerHTML = '<span style="color:#e67e22;font-weight:600">⚠️ 利用者が未登録です。「🔐 役職管理」から追加してください</span>';
+    } else {
+      container.innerHTML = `<span style="color:#7f8c8d">👈 上のプルダウンから自分の名前を選択してください（${registeredCount}名 登録済み）</span>`;
+    }
     return;
   }
   const meta = getCurrentUserMeta();
   const role = getUserRole(currentUser);
   const roleIcon = { '個人':'👤','チーム長':'👥','課長':'🧑‍💼','部長':'🎖️' }[role] || '';
-  container.innerHTML = `<span style="color:#27ae60;font-weight:600">${escapeHtml(currentUser)}</span>
-    <span style="background:#fff8e7;color:#92400e;padding:2px 8px;border-radius:10px;font-size:0.78rem;font-weight:600;border:1px solid #f59e0b">${roleIcon} ${role}</span>
-    | チーム: <strong>${escapeHtml(meta.team || '(未設定)')}</strong>
-    | 課: <strong>${escapeHtml(meta.section || '(未設定)')}</strong>
-    | 部: <strong>${escapeHtml(meta.department || '(未設定)')}</strong>`;
+  container.innerHTML = `<span style="background:#d1fae5;color:#065f46;padding:6px 14px;border-radius:20px;font-weight:700;font-size:0.95rem;border:2px solid #10b981">👤 ${escapeHtml(currentUser)} さん</span>
+    <span style="background:#fff8e7;color:#92400e;padding:3px 10px;border-radius:12px;font-size:0.78rem;font-weight:600;border:1px solid #f59e0b;margin-left:6px">${roleIcon} ${role}</span>
+    <div style="margin-top:6px;font-size:0.78rem;color:#7f8c8d">
+      チーム: <strong>${escapeHtml(meta.team || '(未設定)')}</strong>
+      | 課: <strong>${escapeHtml(meta.section || '(未設定)')}</strong>
+      | 部: <strong>${escapeHtml(meta.department || '(未設定)')}</strong>
+    </div>`;
 }
 
 // ========== 階層切替 ==========
@@ -2342,38 +2375,148 @@ function renderSupportCell(c, period) {
 // ========== 役職管理モーダル ==========
 function openRoleManagerModal() {
   if (!requirePro('役職管理')) return;
-  const owners = [...new Set(data.customers.map(c => (c.owner || '').trim()).filter(Boolean))].sort();
+
+  const owners = getAllOwnerNames();
+
+  // 新規追加フォーム
+  let html = `
+    <div style="background:#f0f9ff;border-left:3px solid #3498db;border-radius:6px;padding:14px;margin-bottom:16px">
+      <div style="font-weight:600;color:#2c3e50;margin-bottom:10px;font-size:0.95rem">➕ 新規利用者を追加</div>
+      <div style="display:grid;grid-template-columns:1.5fr 1fr 1fr 1fr 1fr auto;gap:8px;align-items:end">
+        <div>
+          <label style="font-size:0.78rem;color:#555">名前 *</label>
+          <input type="text" id="newPersonName" placeholder="例：山田太郎" style="width:100%;padding:8px;border:1px solid #dcdfe3;border-radius:6px">
+        </div>
+        <div>
+          <label style="font-size:0.78rem;color:#555">チーム</label>
+          <input type="text" id="newPersonTeam" placeholder="営業1チーム" list="teamList" style="width:100%;padding:8px;border:1px solid #dcdfe3;border-radius:6px">
+        </div>
+        <div>
+          <label style="font-size:0.78rem;color:#555">課</label>
+          <input type="text" id="newPersonSection" placeholder="営業1課" list="sectionList" style="width:100%;padding:8px;border:1px solid #dcdfe3;border-radius:6px">
+        </div>
+        <div>
+          <label style="font-size:0.78rem;color:#555">部</label>
+          <input type="text" id="newPersonDept" placeholder="営業部" list="departmentList" style="width:100%;padding:8px;border:1px solid #dcdfe3;border-radius:6px">
+        </div>
+        <div>
+          <label style="font-size:0.78rem;color:#555">役職</label>
+          <select id="newPersonRole" style="width:100%;padding:8px;border:1px solid #dcdfe3;border-radius:6px">
+            <option value="個人">👤 個人</option>
+            <option value="チーム長">👥 チーム長</option>
+            <option value="課長">🧑‍💼 課長</option>
+            <option value="部長">🎖️ 部長</option>
+          </select>
+        </div>
+        <button class="btn" onclick="addNewPerson()" style="padding:8px 16px">追加</button>
+      </div>
+      <div style="font-size:0.75rem;color:#7f8c8d;margin-top:6px">※ 顧客レコードなしで先に利用者を登録できます</div>
+    </div>
+  `;
+
   if (owners.length === 0) {
-    alert('登録済の担当者がいません。先に顧客の担当者を入力してください。');
+    html += '<div style="text-align:center;color:#95a5a6;padding:30px">まだ利用者が登録されていません。上のフォームから追加してください。</div>';
+  } else {
+    html += `<div style="overflow-x:auto"><table class="sales-table">
+      <thead><tr><th>利用者名</th><th>所属</th><th>担当顧客数</th><th>役職</th><th></th></tr></thead>
+      <tbody>`;
+    owners.forEach(o => {
+      const customers = data.customers.filter(c => c.owner === o);
+      // 所属：利用者マスター優先、なければ顧客レコード
+      const master = findPersonInMaster(o);
+      let team = '', section = '', dept = '';
+      if (master) {
+        team = master.team || ''; section = master.section || ''; dept = master.department || '';
+      } else if (customers.length > 0) {
+        team = customers[0].team || ''; section = customers[0].section || ''; dept = customers[0].department || '';
+      }
+      const orgStr = [team, section, dept].filter(Boolean).join(' / ') || '-';
+      const role = getUserRole(o);
+      const isMaster = !!master;
+      html += `<tr>
+        <td><strong>${escapeHtml(o)}</strong>${isMaster ? ' <span style="background:#dbeafe;color:#1e40af;padding:1px 6px;border-radius:8px;font-size:0.7rem;font-weight:600">M</span>' : ''}</td>
+        <td style="font-size:0.82rem;color:#7f8c8d">${escapeHtml(orgStr)}</td>
+        <td>${customers.length}社</td>
+        <td>
+          <select class="role-select-input" data-owner="${escapeHtml(o)}" style="padding:6px 10px;border:1px solid #dcdfe3;border-radius:6px;font-weight:600">
+            <option value="個人" ${role==='個人'?'selected':''}>👤 個人</option>
+            <option value="チーム長" ${role==='チーム長'?'selected':''}>👥 チーム長</option>
+            <option value="課長" ${role==='課長'?'selected':''}>🧑‍💼 課長</option>
+            <option value="部長" ${role==='部長'?'selected':''}>🎖️ 部長</option>
+          </select>
+        </td>
+        <td>
+          ${isMaster ? `<button class="btn small secondary" onclick="editPerson('${escapeHtml(o).replace(/'/g,"\\'")}')" style="font-size:0.78rem">編集</button>
+          <button class="btn small danger" onclick="deletePerson('${escapeHtml(o).replace(/'/g,"\\'")}')" style="font-size:0.78rem">削除</button>` : (customers.length === 0 ? '' : `<span style="font-size:0.75rem;color:#7f8c8d">${customers.length}顧客に紐付</span>`)}
+        </td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+    html += '<div style="font-size:0.75rem;color:#7f8c8d;margin-top:8px">🔵 <strong>M</strong> = 利用者マスターに登録済み（編集・削除可能）</div>';
+  }
+
+  document.getElementById('roleManagerContent').innerHTML = html;
+  refreshOrgDatalists(); // datalist更新
+  document.getElementById('roleManagerModal').classList.add('active');
+}
+
+function addNewPerson() {
+  const name = document.getElementById('newPersonName').value.trim();
+  if (!name) { alert('名前は必須です'); return; }
+  // 重複チェック
+  if ((data.people || []).some(p => p.name === name)) {
+    alert(`「${name}」は既に登録されています`);
     return;
   }
-  let html = `<div style="overflow-x:auto"><table class="sales-table">
-    <thead><tr><th>担当者</th><th>所属</th><th>担当顧客数</th><th>役職</th></tr></thead>
-    <tbody>`;
-  owners.forEach(o => {
-    const customers = data.customers.filter(c => c.owner === o);
-    const team = customers[0] ? customers[0].team : '';
-    const section = customers[0] ? customers[0].section : '';
-    const dept = customers[0] ? customers[0].department : '';
-    const orgStr = [team, section, dept].filter(Boolean).join(' / ') || '-';
-    const role = getUserRole(o);
-    html += `<tr>
-      <td><strong>${escapeHtml(o)}</strong></td>
-      <td style="font-size:0.82rem;color:#7f8c8d">${escapeHtml(orgStr)}</td>
-      <td>${customers.length}社</td>
-      <td>
-        <select class="role-select-input" data-owner="${escapeHtml(o)}" style="padding:6px 10px;border:1px solid #dcdfe3;border-radius:6px;font-weight:600">
-          <option value="個人" ${role==='個人'?'selected':''}>👤 個人</option>
-          <option value="チーム長" ${role==='チーム長'?'selected':''}>👥 チーム長</option>
-          <option value="課長" ${role==='課長'?'selected':''}>🧑‍💼 課長</option>
-          <option value="部長" ${role==='部長'?'selected':''}>🎖️ 部長</option>
-        </select>
-      </td>
-    </tr>`;
-  });
-  html += '</tbody></table></div>';
-  document.getElementById('roleManagerContent').innerHTML = html;
-  document.getElementById('roleManagerModal').classList.add('active');
+  const team = document.getElementById('newPersonTeam').value.trim();
+  const section = document.getElementById('newPersonSection').value.trim();
+  const department = document.getElementById('newPersonDept').value.trim();
+  const role = document.getElementById('newPersonRole').value;
+  if (!data.people) data.people = [];
+  data.people.push({ name, team, section, department, updatedAt: nowIso() });
+  setUserRole(name, role);
+  saveData();
+  openRoleManagerModal(); // モーダル再描画
+  refreshUserSelect();
+  refreshUserMetaDisplay();
+  alert(`✅ 「${name}」を利用者に追加しました`);
+}
+
+function editPerson(name) {
+  const p = findPersonInMaster(name);
+  if (!p) return;
+  const newName = prompt('名前:', p.name);
+  if (newName === null) return;
+  const newTeam = prompt('チーム:', p.team || '');
+  if (newTeam === null) return;
+  const newSection = prompt('課:', p.section || '');
+  if (newSection === null) return;
+  const newDept = prompt('部:', p.department || '');
+  if (newDept === null) return;
+  const oldName = p.name;
+  p.name = newName.trim();
+  p.team = newTeam.trim();
+  p.section = newSection.trim();
+  p.department = newDept.trim();
+  p.updatedAt = nowIso();
+  // 名前が変わった場合、rolesも移行
+  if (oldName !== p.name && data.roles && data.roles[oldName]) {
+    data.roles[p.name] = data.roles[oldName];
+    delete data.roles[oldName];
+  }
+  saveData();
+  openRoleManagerModal();
+  refreshUserSelect();
+  refreshUserMetaDisplay();
+}
+
+function deletePerson(name) {
+  if (!confirm(`利用者マスターから「${name}」を削除しますか？\n（顧客レコードに紐付いている場合、顧客側の担当者名は残ります）`)) return;
+  data.people = (data.people || []).filter(p => p.name !== name);
+  saveData();
+  openRoleManagerModal();
+  refreshUserSelect();
+  refreshUserMetaDisplay();
 }
 
 function saveRoleSettings() {
@@ -3618,6 +3761,11 @@ function deleteMeeting(id) {
 // ========== モーダル操作 ==========
 function closeModal(id) {
   document.getElementById(id).classList.remove('active');
+  // 役職管理モーダルを閉じた時、ユーザードロップダウンを再更新
+  if (id === 'roleManagerModal' || id === 'customerModal' || id === 'bulkRenameModal') {
+    if (typeof refreshUserSelect === 'function') refreshUserSelect();
+    if (typeof refreshUserMetaDisplay === 'function') refreshUserMetaDisplay();
+  }
 }
 document.querySelectorAll('.modal-overlay').forEach(o => {
   o.addEventListener('click', e => { if (e.target === o) o.classList.remove('active'); });
@@ -5266,3 +5414,8 @@ render();
 </script>
 </body>
 </html>
+
+
+
+
+ 
