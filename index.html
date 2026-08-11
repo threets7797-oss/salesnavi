@@ -1144,7 +1144,6 @@
       <button class="btn white" onclick="openICSModal()">📅 カレンダー取込 ⭐</button>
       <button class="btn white mobile-hide" onclick="openBulkRenameModal()">🔧 一括書換 ⭐</button>
       <button class="btn white mobile-hide" onclick="openCadenceModal()">🔄 フォロー設定 ⭐</button>
-      <button class="btn white mobile-hide" onclick="injectStaleSamples()">🧪 放置案件サンプル投入</button>
       <button class="btn white mobile-hide" onclick="exportJSON()">💾 バックアップ</button>
     </div>
   </header>
@@ -3146,95 +3145,22 @@ function renderStaleAlerts() {
   }).join('');
 }
 
-// 放置案件サンプル投入(動作確認用)
-function injectStaleSamples() {
-  if (!confirm('放置案件のサンプルデータを投入します。\n（既存のデータは保持され、サンプルが追加されます）\nよろしいですか？')) return;
-
-  const today = new Date();
-  const daysAgo = (n) => {
-    const d = new Date(today);
-    d.setDate(d.getDate() - n);
-    return d.toISOString().slice(0, 10);
-  };
-  const futureDate = (n) => {
-    const d = new Date(today);
-    d.setDate(d.getDate() + n);
-    return d.toISOString().slice(0, 10);
-  };
-
-  // 担当者・組織情報のデフォルト(現在のユーザーがあればそれを優先)
-  const meta = currentUser ? getCurrentUserMeta() : { team: '営業1チーム', section: '営業1課', department: '営業部' };
-  const ownerName = currentUser || 'デモ担当者';
-
-  // 4社のサンプル(全て放置状態)
-  const samples = [
-    {
-      cust: { companyName: '【デモ】サンプルテック株式会社', industry: 'IT', contactName: '山田太郎(CTO)', contactInfo: 'sample@example.jp', stage: 'トライアル開始', trialStartDate: daysAgo(60), billingAmount: '50000', billingType: 'monthly', memo: '放置サンプル', owner: ownerName, team: meta.team, section: meta.section, department: meta.department },
-      meetings: [
-        { date: daysAgo(60), title: '【M】サンプルテック 初回MTG', memo: 'CTOと面談、好感触' },
-        { date: daysAgo(50), title: '【M】サンプルテック 製品デモ', memo: 'デモ実施' },
-        { date: daysAgo(48), title: '【M】サンプルテック 見積提示', memo: '見積送付' },
-      ]
-    },
-    {
-      cust: { companyName: '【デモ】デモ製造株式会社', industry: '製造業', contactName: '佐藤花子', contactInfo: '', stage: '成約', trialStartDate: daysAgo(80), registrationDate: daysAgo(50), billingAmount: '1200000', billingType: 'yearly', memo: '放置サンプル', owner: ownerName, team: meta.team, section: meta.section, department: meta.department },
-      meetings: [
-        { date: daysAgo(80), title: '【M】デモ製造 初回', memo: '' },
-        { date: daysAgo(40), title: '【M】デモ製造 契約締結', memo: '無事成約' },
-      ]
-    },
-    {
-      cust: { companyName: '【デモ】北辰商事株式会社', industry: '商社', contactName: '中村部長', contactInfo: '', stage: '商談のみ', memo: '放置サンプル', owner: ownerName, team: meta.team, section: meta.section, department: meta.department },
-      meetings: [
-        { date: daysAgo(37), title: '【M】北辰商事 初回MTG', memo: '部長と面談' },
-      ]
-    },
-    {
-      cust: { companyName: '【デモ】テストフーズ株式会社', industry: '食品', contactName: '', contactInfo: '', stage: 'トライアル開始', trialStartDate: daysAgo(45), billingAmount: '80000', billingType: 'monthly', memo: '放置サンプル', owner: ownerName, team: meta.team, section: meta.section, department: meta.department },
-      meetings: [
-        { date: daysAgo(45), title: '【M】テストフーズ 初回' },
-        { date: daysAgo(40), title: '【M】テストフーズ 提案' },
-        { date: daysAgo(35), title: '【M】テストフーズ 価格交渉' },
-        { date: daysAgo(33), title: '【M】テストフーズ トライアル開始' },
-      ]
-    },
-    // 比較用：未来の予定があるので放置にならない案件
-    {
-      cust: { companyName: '【デモ】予定アリ商事', industry: '小売', contactName: '担当者A', stage: 'トライアル開始', trialStartDate: daysAgo(45), memo: '比較用：放置にならない', owner: ownerName, team: meta.team, section: meta.section, department: meta.department },
-      meetings: [
-        { date: daysAgo(45), title: '【M】予定アリ商事 初回' },
-        { date: futureDate(7), title: '【M】予定アリ商事 訪問予定' },
-      ]
-    },
-  ];
-
-  let custCount = 0, meetCount = 0;
-  samples.forEach(s => {
-    const cId = uid();
-    const cust = { ...s.cust, id: cId, updatedAt: nowIso() };
-    data.customers.push(cust);
-    custCount++;
-    s.meetings.forEach(m => {
-      data.meetings.push({
-        id: uid(),
-        customerId: cId,
-        date: m.date,
-        title: m.title,
-        memo: m.memo || '',
-        note: m.memo ? `${m.title}\n${m.memo}` : m.title,
-        createdAt: m.date + 'T10:00:00Z',
-        updatedAt: m.date + 'T10:00:00Z',
-        source: 'demo-stale',
-      });
-      meetCount++;
-    });
-  });
-
+// 過去に投入された【デモ】プレフィックス付きのサンプルデータを一掃するヘルパー
+// コンソールから cleanupDemoData() で実行可能
+function cleanupDemoData() {
+  const demoIds = new Set(data.customers.filter(c => (c.companyName || '').includes('【デモ】')).map(c => c.id));
+  if (demoIds.size === 0) {
+    alert('【デモ】プレフィックスの顧客は見つかりませんでした');
+    return;
+  }
+  if (!confirm(`【デモ】プレフィックスの顧客 ${demoIds.size} 社と紐付く商談を削除します。よろしいですか？`)) return;
+  data.customers = data.customers.filter(c => !demoIds.has(c.id));
+  data.meetings = data.meetings.filter(m => !demoIds.has(m.customerId));
   saveData();
   refreshUserSelect();
   refreshUserMetaDisplay();
   render();
-  alert(`✅ 放置案件サンプルを投入しました\n\n顧客: ${custCount}社（うち4社がアラート対象）\n商談: ${meetCount}件\n\n画面上部の黄色いアラートバナーをご確認ください。`);
+  alert(`✅ ${demoIds.size} 社のデモ顧客を削除しました`);
 }
 
 function toggleStaleAlert() {
