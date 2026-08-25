@@ -440,6 +440,8 @@
   }
   .cal-event:hover { opacity: 0.85; }
   .cal-event.past { opacity: 0.7; background: #95a5a6; }
+  .cal-event.billing { background: #f39c12; color: white; font-weight: 600; }
+  .cal-event.billing:hover { background: #e67e22; }
   .cal-event.stage-商談のみ { background: #4a5568; }
   .cal-event.stage-トライアル開始 { background: #3498db; }
   .cal-event.stage-成約 { background: #27ae60; }
@@ -1377,6 +1379,14 @@
         </select>
       </div>
     </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>請求日（毎月/毎年の何日か）</label>
+        <input type="number" id="billingDay" min="1" max="31" placeholder="空欄=本登録日の日を使用">
+        <small style="color:#7f8c8d;font-size:0.75rem">月払い=毎月この日 / 年払い=毎年本登録月のこの日 に請求日として自動カレンダー表示</small>
+      </div>
+      <div class="form-group"></div>
+    </div>
     <div class="form-group">
       <label>備考</label>
       <textarea id="memo"></textarea>
@@ -1979,6 +1989,7 @@ function loadData() {
         if (c.department === undefined) c.department = '';
         if (!c.updatedAt) c.updatedAt = c.createdAt || nowIso;
         if (!c.monthlySales || typeof c.monthlySales !== 'object') c.monthlySales = {}; // { "2026-08": 50000, ... }
+        if (c.billingDay === undefined) c.billingDay = ''; // 請求日(1-31)、空なら本登録日の日を使う
       });
       (parsed.meetings || []).forEach(m => {
         if (!m.updatedAt) m.updatedAt = m.createdAt || nowIso;
@@ -3473,6 +3484,7 @@ function openCustomerModal(customerId) {
     document.getElementById('registrationDate').value = c.registrationDate || '';
     document.getElementById('billingAmount').value = c.billingAmount || '';
     document.getElementById('billingType').value = c.billingType || '';
+    document.getElementById('billingDay').value = c.billingDay || '';
     document.getElementById('memo').value = c.memo || '';
     document.getElementById('ownerField').value = c.owner || '';
     document.getElementById('teamField').value = c.team || '';
@@ -3602,6 +3614,7 @@ function saveCustomer() {
     registrationDate: document.getElementById('registrationDate').value,
     billingAmount: document.getElementById('billingAmount').value,
     billingType: document.getElementById('billingType').value,
+    billingDay: document.getElementById('billingDay').value,
     memo: document.getElementById('memo').value.trim(),
     owner: document.getElementById('ownerField').value.trim(),
     team: document.getElementById('teamField').value.trim(),
@@ -4151,6 +4164,7 @@ function normalizeCustomer(c) {
     section: c.section || '',
     department: c.department || '',
     monthlySales: (c.monthlySales && typeof c.monthlySales === 'object') ? c.monthlySales : {},
+    billingDay: c.billingDay || '',
     updatedAt: c.updatedAt || c.createdAt || nowIso(),
   };
 }
@@ -4751,8 +4765,65 @@ function fmtDate(d) {
 }
 function isSameDate(a, b) { return a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate(); }
 
+// 請求日イベントを仮想生成（本登録日 + 支払形態 + billingDay から）
+function getBillingEventsForDate(dateStr) {
+  const targetDate = new Date(dateStr + 'T00:00:00');
+  const targetDay = targetDate.getDate();
+  const targetMonth = targetDate.getMonth() + 1;
+  const events = [];
+  data.customers.forEach(c => {
+    // 成約/本登録開始/契約終了 かつ 支払形態あり かつ 請求金額あり
+    if (!['成約', '本登録開始'].includes(c.stage)) return;
+    if (!c.billingType || !c.billingAmount) return;
+    const start = c.registrationDate ? new Date(c.registrationDate + 'T00:00:00') : null;
+    if (!start) return;
+    // 開始日より前は請求なし
+    if (targetDate < start) return;
+    // 請求日を決定
+    let billingDay;
+    if (c.billingDay && !isNaN(parseInt(c.billingDay, 10))) {
+      billingDay = parseInt(c.billingDay, 10);
+    } else {
+      billingDay = start.getDate();
+    }
+    if (targetDay !== billingDay) return;
+    if (c.billingType === 'monthly') {
+      // 毎月同じ日に請求
+      events.push({
+        id: `billing-${c.id}-${dateStr}`,
+        virtual: true,
+        source: 'billing',
+        customerId: c.id,
+        customerName: c.companyName,
+        date: dateStr,
+        time: '',
+        title: `💴 ${c.companyName} 請求日 (¥${Number(c.billingAmount).toLocaleString()})`,
+        memo: `月額 ¥${Number(c.billingAmount).toLocaleString()} の請求日`,
+        stage: c.stage,
+      });
+    } else if (c.billingType === 'yearly') {
+      // 年払い: 本登録月と同じ月・日
+      if (targetMonth === start.getMonth() + 1) {
+        events.push({
+          id: `billing-${c.id}-${dateStr}`,
+          virtual: true,
+          source: 'billing',
+          customerId: c.id,
+          customerName: c.companyName,
+          date: dateStr,
+          time: '',
+          title: `💴 ${c.companyName} 年次請求 (¥${Number(c.billingAmount).toLocaleString()})`,
+          memo: `年額 ¥${Number(c.billingAmount).toLocaleString()} の請求日`,
+          stage: c.stage,
+        });
+      }
+    }
+  });
+  return events;
+}
+
 function getEventsForDate(dateStr) {
-  return data.meetings
+  const meetingEvents = data.meetings
     .filter(m => m.date === dateStr)
     .map(m => {
       const c = data.customers.find(x => x.id === m.customerId);
@@ -4763,7 +4834,10 @@ function getEventsForDate(dateStr) {
         customerName: c ? c.companyName : '',
         stage: c ? c.stage : '',
       };
-    })
+    });
+  // 請求日イベントを追加
+  const billingEvents = getBillingEventsForDate(dateStr);
+  return [...meetingEvents, ...billingEvents]
     .sort((a, b) => (a.time || '').localeCompare(b.time || ''));
 }
 
@@ -4831,10 +4905,12 @@ function renderMonthView() {
       events.slice(0, maxShow).forEach(ev => {
         const stageCls = ev.stage ? `stage-${ev.stage}` : '';
         const pastCls = cellDate < today && !isToday ? 'past' : '';
+        const billingCls = ev.source === 'billing' ? 'billing' : '';
         const displayText = ev.title || ev.customerName || ev.note || '(無題)';
         const label = (ev.time ? ev.time + ' ' : '') + displayText;
         const tooltip = ev.title + (ev.memo ? '\n' + ev.memo : '') + (ev.customerName ? `\n顧客: ${ev.customerName}` : '');
-        html += `<span class="cal-event ${stageCls} ${pastCls}" onclick="event.stopPropagation();editAppointment('${ev.id}')" title="${escapeHtml(tooltip)}">${escapeHtml(label)}</span>`;
+        const clickHandler = ev.virtual ? '' : `onclick="event.stopPropagation();editAppointment('${ev.id}')"`;
+        html += `<span class="cal-event ${stageCls} ${pastCls} ${billingCls}" ${clickHandler} title="${escapeHtml(tooltip)}">${escapeHtml(label)}</span>`;
       });
       if (events.length > maxShow) {
         html += `<div class="cal-event-more" onclick="event.stopPropagation();showDayEvents('${dateStr}')">+${events.length - maxShow} 件</div>`;
@@ -4889,10 +4965,12 @@ function renderWeekView() {
       html += `<div class="time-cell" onclick="openAppointmentModal({date:'${dateStr}',time:'${String(h).padStart(2,'0')}:00'})">`;
       events.forEach(ev => {
         const stageCls = ev.stage ? `stage-${ev.stage}` : '';
+        const billingCls = ev.source === 'billing' ? 'billing' : '';
         const displayText = ev.title || ev.customerName || ev.note || '';
         const label = (ev.time ? ev.time + ' ' : '') + displayText;
         const tooltip = ev.title + (ev.memo ? '\n' + ev.memo : '') + (ev.customerName ? `\n顧客: ${ev.customerName}` : '');
-        html += `<div class="week-event cal-event ${stageCls}" onclick="event.stopPropagation();editAppointment('${ev.id}')" title="${escapeHtml(tooltip)}">${escapeHtml(label)}</div>`;
+        const clickHandler = ev.virtual ? '' : `onclick="event.stopPropagation();editAppointment('${ev.id}')"`;
+        html += `<div class="week-event cal-event ${stageCls} ${billingCls}" ${clickHandler} title="${escapeHtml(tooltip)}">${escapeHtml(label)}</div>`;
       });
       html += `</div>`;
     });
@@ -4920,10 +4998,12 @@ function renderDayView() {
         '商談のみ':'#4a5568','トライアル開始':'#3498db','成約':'#27ae60',
         '本登録開始':'#9b59b6','失注':'#e74c3c','契約終了':'#7f8c8d'
       }[ev.stage] || '#667eea';
-      html += `<div class="cal-day-event-item" style="border-left-color:${stageColor}" onclick="editAppointment('${ev.id}')">
-        <div class="item-time">${ev.time || '終日'}</div>
+      const dayItemBorderColor = ev.source === 'billing' ? '#f39c12' : stageColor;
+      const dayClickHandler = ev.virtual ? '' : `onclick="editAppointment('${ev.id}')"`;
+      html += `<div class="cal-day-event-item" style="border-left-color:${dayItemBorderColor}" ${dayClickHandler}>
+        <div class="item-time">${ev.time || (ev.source === 'billing' ? '💴' : '終日')}</div>
         <div class="item-body">
-          <div class="item-company">${escapeHtml(ev.title || ev.customerName || '(無題)')} ${ev.stage ? `<span class="stage stage-${ev.stage}" style="margin-left:8px">${ev.stage}</span>` : ''}</div>
+          <div class="item-company">${escapeHtml(ev.title || ev.customerName || '(無題)')} ${ev.stage && ev.source !== 'billing' ? `<span class="stage stage-${ev.stage}" style="margin-left:8px">${ev.stage}</span>` : ''}</div>
           ${ev.customerName && ev.title !== ev.customerName ? `<div style="font-size:0.78rem;color:#27ae60;margin-top:2px">🔗 顧客: ${escapeHtml(ev.customerName)}</div>` : ''}
           ${ev.memo ? `<div class="item-note">${escapeHtml(ev.memo)}</div>` : ''}
         </div>
