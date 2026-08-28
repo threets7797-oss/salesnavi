@@ -1146,6 +1146,7 @@
       <button class="btn white" onclick="openICSModal()">📅 カレンダー取込 ⭐</button>
       <button class="btn white mobile-hide" onclick="openBulkRenameModal()">🔧 一括書換 ⭐</button>
       <button class="btn white mobile-hide" onclick="openCadenceModal()">🔄 フォロー設定 ⭐</button>
+      <button class="btn white mobile-hide" onclick="openCompanySettingsModal()">⚙️ 会社設定</button>
       <button class="btn white mobile-hide" onclick="exportJSON()">💾 バックアップ</button>
     </div>
   </header>
@@ -1564,6 +1565,41 @@
     <div class="modal-actions">
       <button class="btn secondary" onclick="closeModal('roleManagerModal')">キャンセル</button>
       <button class="btn" onclick="saveRoleSettings()">役職を保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 会社設定モーダル -->
+<div class="modal-overlay" id="companySettingsModal">
+  <div class="modal" style="max-width: 600px">
+    <h2>⚙️ 会社設定</h2>
+    <div style="background:#f0f9ff;border-left:3px solid #3498db;padding:10px 14px;border-radius:4px;font-size:0.85rem;margin-bottom:16px;color:#2c3e50">
+      決算月（年度の最終月）を設定してください。会計年度の開始月は自動計算されます。
+    </div>
+
+    <div class="form-group">
+      <label>決算月</label>
+      <select id="fiscalEndMonthSelect" onchange="updateFiscalStartPreview()" style="padding:10px;font-size:1rem;font-weight:600">
+        <option value="12">12月決算（1月始まり）</option>
+        <option value="1">1月決算（2月始まり）</option>
+        <option value="2">2月決算（3月始まり）</option>
+        <option value="3">3月決算（4月始まり ← 日本の一般的な会計年度）</option>
+        <option value="4">4月決算（5月始まり）</option>
+        <option value="5">5月決算（6月始まり）</option>
+        <option value="6">6月決算（7月始まり）</option>
+        <option value="7">7月決算（8月始まり）</option>
+        <option value="8">8月決算（9月始まり）</option>
+        <option value="9">9月決算（10月始まり）</option>
+        <option value="10">10月決算（11月始まり）</option>
+        <option value="11">11月決算（12月始まり）</option>
+      </select>
+    </div>
+
+    <div id="fiscalPreview" style="background:#d1fae5;border-left:3px solid #10b981;padding:12px 16px;border-radius:6px;color:#065f46;font-size:0.9rem"></div>
+
+    <div class="modal-actions">
+      <button class="btn secondary" onclick="closeModal('companySettingsModal')">キャンセル</button>
+      <button class="btn" onclick="saveCompanySettings()">保存</button>
     </div>
   </div>
 </div>
@@ -4692,6 +4728,64 @@ function renderSalesYearly(customers) {
     </table></div>
   `;
   document.getElementById('salesContent').innerHTML = html;
+}
+
+// 会社設定モーダル
+function openCompanySettingsModal() {
+  const sel = document.getElementById('fiscalEndMonthSelect');
+  if (!sel) return;
+  // 現在の開始月から決算月を逆算 (決算月 = 開始月 - 1、1月→12月)
+  const endMonth = fiscalStartMonth === 1 ? 12 : fiscalStartMonth - 1;
+  sel.value = endMonth;
+  updateFiscalStartPreview();
+  document.getElementById('companySettingsModal').classList.add('active');
+}
+
+function updateFiscalStartPreview() {
+  const sel = document.getElementById('fiscalEndMonthSelect');
+  if (!sel) return;
+  const endMonth = parseInt(sel.value, 10);
+  const startMonth = endMonth === 12 ? 1 : endMonth + 1;
+  const preview = document.getElementById('fiscalPreview');
+  if (!preview) return;
+  // 現在の年度の期間を表示
+  const today = new Date();
+  const currentY = today.getFullYear();
+  const currentM = today.getMonth() + 1;
+  // 現在の年度を計算
+  let fyStartYear;
+  if (currentM >= startMonth) {
+    fyStartYear = currentY;
+  } else {
+    fyStartYear = currentY - 1;
+  }
+  const fyStart = `${fyStartYear}年${startMonth}月1日`;
+  const fyEndYear = startMonth === 1 ? fyStartYear : fyStartYear + 1;
+  // 終了月の末日
+  const lastDay = new Date(fyEndYear, endMonth, 0).getDate();
+  const fyEnd = `${fyEndYear}年${endMonth}月${lastDay}日`;
+  preview.innerHTML = `
+    <strong>✅ 設定内容</strong><br>
+    決算月：<strong>${endMonth}月</strong>（年度末）<br>
+    会計年度開始月：<strong>${startMonth}月</strong><br>
+    今期の期間：<strong>${fyStart} ～ ${fyEnd}</strong>
+  `;
+}
+
+function saveCompanySettings() {
+  const sel = document.getElementById('fiscalEndMonthSelect');
+  const endMonth = parseInt(sel.value, 10);
+  const startMonth = endMonth === 12 ? 1 : endMonth + 1;
+  fiscalStartMonth = startMonth;
+  localStorage.setItem(FISCAL_START_KEY, String(startMonth));
+  // 売上集計モーダルの表示も更新
+  const fsSel = document.getElementById('fiscalStartSelect');
+  if (fsSel) fsSel.value = startMonth;
+  closeModal('companySettingsModal');
+  refreshSalesYearSelect();
+  if (displayMode === 'sales') renderSalesSummary();
+  render();
+  alert(`✅ 決算月を${endMonth}月に設定しました\n会計年度は${startMonth}月始まりで計算されます`);
 }
 
 function changeFiscalStart(value) {
