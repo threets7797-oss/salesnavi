@@ -5018,6 +5018,73 @@ function renderDayView() {
 // ========== 予定モーダル ==========
 let editingAppointmentId = null;
 
+// 【M】or【S】+社名 のパターンから社名を抽出
+function extractCompanyFromTagTitle(text) {
+  if (!text) return null;
+  // 【M】株式会社サンプル / [M] サンプル / 【 M 】サンプル 等を許容
+  const patterns = [
+    /【\s*[MS]\s*】\s*([^\s、,。/／・:：\|｜]+)/,
+    /\[\s*[MS]\s*\]\s*([^\s、,。/／・:：\|｜]+)/,
+  ];
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (m && m[1]) {
+      // 後続の余計な単語を除去（"訪問","打合せ","デモ"等）
+      let name = m[1].trim();
+      // 末尾の助詞や句読点を除去
+      name = name.replace(/[様さん殿御中]$/g, '');
+      return name;
+    }
+  }
+  return null;
+}
+
+// タイトルに【M】or【S】タグがあるか
+function hasMeetingOrSupportTag(text) {
+  if (!text) return false;
+  return /【\s*[MS]\s*】/.test(text) || /\[\s*[MS]\s*\]/.test(text);
+}
+
+// 会社名から既存顧客を探し、なければ新規作成
+function findOrCreateCustomerByName(companyName, options) {
+  if (!companyName || !companyName.trim()) return null;
+  const name = companyName.trim();
+  const short = getShortCompanyName(name);
+  // 既存を検索(株式会社等の表記ゆれ許容)
+  const existing = data.customers.find(c => {
+    if (!c.companyName) return false;
+    if (c.companyName === name) return true;
+    const cshort = getShortCompanyName(c.companyName);
+    return short && cshort && short === cshort;
+  });
+  if (existing) return { customer: existing, created: false };
+
+  // 新規作成
+  const meta = currentUser ? getCurrentUserMeta() : { team: '', section: '', department: '' };
+  const newC = {
+    id: uid(),
+    companyName: name,
+    industry: (options && options.industry) || '未分類',
+    contactName: '',
+    contactInfo: '',
+    stage: '商談のみ',
+    trialStartDate: '',
+    registrationDate: '',
+    billingAmount: '',
+    billingType: '',
+    billingDay: '',
+    memo: (options && options.memo) || 'カレンダーから自動追加',
+    owner: currentUser || '',
+    team: meta.team,
+    section: meta.section,
+    department: meta.department,
+    monthlySales: {},
+    updatedAt: nowIso(),
+  };
+  data.customers.push(newC);
+  return { customer: newC, created: true };
+}
+
 // タイトル+メモから紐付く顧客を自動検出
 function autoDetectCustomer(title, memo) {
   const haystack = `${title || ''}\n${memo || ''}`;
@@ -5056,6 +5123,17 @@ function updateAutoLinkPreview() {
     el.innerHTML = `✅ 自動紐付け：<strong style="color:#27ae60">${escapeHtml(matched.companyName)}</strong>${matched.owner ? ` （担当：${escapeHtml(matched.owner)}）` : ''}`;
     el.style.background = '#d1fae5';
     el.style.color = '#065f46';
+  } else if (hasMeetingOrSupportTag(title)) {
+    const extracted = extractCompanyFromTagTitle(title);
+    if (extracted) {
+      el.innerHTML = `🆕 新規顧客として自動追加されます：<strong style="color:#92400e">${escapeHtml(extracted)}</strong>`;
+      el.style.background = '#fff8e7';
+      el.style.color = '#92400e';
+      return;
+    }
+    el.innerHTML = '💡 タイトルまたはメモに会社名を含めると自動的に顧客と紐付きます（顧客未紐付で保存もOK）';
+    el.style.background = '#f5f7ff';
+    el.style.color = '#7f8c8d';
   } else {
     el.innerHTML = '💡 タイトルまたはメモに会社名を含めると自動的に顧客と紐付きます（顧客未紐付で保存もOK）';
     el.style.background = '#f5f7ff';
@@ -5112,8 +5190,21 @@ function saveAppointment() {
   const location = document.getElementById('appointmentLocation').value.trim();
 
   // タイトル+メモから顧客自動検出
-  const matched = autoDetectCustomer(title, memo);
-  const customerId = matched ? matched.id : null;
+  let matched = autoDetectCustomer(title, memo);
+  let customerId = matched ? matched.id : null;
+  let autoCreatedName = null;
+
+  // マッチしなかった場合、【M】/【S】+社名 パターンから新規顧客を自動作成
+  if (!customerId && hasMeetingOrSupportTag(title)) {
+    const extracted = extractCompanyFromTagTitle(title);
+    if (extracted) {
+      const result = findOrCreateCustomerByName(extracted, { memo: 'カレンダー予定から自動追加' });
+      if (result) {
+        customerId = result.customer.id;
+        if (result.created) autoCreatedName = result.customer.companyName;
+      }
+    }
+  }
 
   // note フィールドは title + memo の連結（既存ロジックと互換性確保）
   const note = memo ? `${title}\n${memo}` : title;
@@ -5135,6 +5226,9 @@ function saveAppointment() {
   closeModal('appointmentModal');
   render();
   if (displayMode !== 'table') renderCalendar();
+  if (autoCreatedName) {
+    setTimeout(() => alert(`✅ 新規顧客「${autoCreatedName}」を自動で追加しました\n（顧客テーブルで詳細を編集できます）`), 100);
+  }
 }
 
 function deleteAppointment() {
@@ -5392,6 +5486,15 @@ function refreshICSPreview() {
         if (coShort && coShort !== co.name && haystack.includes(coShort)) { matched = co; break; }
       }
     }
+    // 未マッチ かつ 【M】/【S】タグ付きなら、新規顧客として自動作成予定
+    let autoCreateName = null;
+    if (!matched && hasMeetingOrSupportTag(title)) {
+      const extracted = extractCompanyFromTagTitle(title);
+      if (extracted) {
+        autoCreateName = extracted;
+        matched = { id: null, name: extracted, autoCreate: true };
+      }
+    }
     if (!matched) {
       unmatched.push({ date: ev.dtStart, title, reason: '会社名なし' });
       continue;
@@ -5408,6 +5511,7 @@ function refreshICSPreview() {
       time: ev.dtStartTime || '',
       note: desc || title,
       eventTitle: title,
+      autoCreate: !!matched.autoCreate,
     });
     existingKeys.add(key); // 複数予定が同日にある場合も1件だけ
   }
@@ -5422,7 +5526,8 @@ function refreshICSPreview() {
     html += '<table style="width:100%;border-collapse:collapse;font-size:0.82rem">';
     html += '<thead><tr style="background:#f8fafc"><th style="text-align:left;padding:4px">日付</th><th style="text-align:left;padding:4px">時刻</th><th style="text-align:left;padding:4px">会社名</th><th style="text-align:left;padding:4px">タイトル</th></tr></thead><tbody>';
     results.slice(0, 30).forEach(r => {
-      html += `<tr><td style="padding:4px;border-top:1px solid #edf2f7">${escapeHtml(r.date)}</td><td style="padding:4px;border-top:1px solid #edf2f7">${escapeHtml(r.time)}</td><td style="padding:4px;border-top:1px solid #edf2f7;color:#667eea;font-weight:600">${escapeHtml(r.companyName)}</td><td style="padding:4px;border-top:1px solid #edf2f7">${escapeHtml(r.eventTitle)}</td></tr>`;
+      const newBadge = r.autoCreate ? ' <span style="background:#fff8e7;color:#92400e;padding:1px 6px;border-radius:8px;font-size:0.68rem;font-weight:700">🆕 新規</span>' : '';
+      html += `<tr><td style="padding:4px;border-top:1px solid #edf2f7">${escapeHtml(r.date)}</td><td style="padding:4px;border-top:1px solid #edf2f7">${escapeHtml(r.time)}</td><td style="padding:4px;border-top:1px solid #edf2f7;color:#667eea;font-weight:600">${escapeHtml(r.companyName)}${newBadge}</td><td style="padding:4px;border-top:1px solid #edf2f7">${escapeHtml(r.eventTitle)}</td></tr>`;
     });
     html += '</tbody></table>';
     if (results.length > 30) html += `<div style="padding:4px;color:#7f8c8d;font-size:0.78rem">他 ${results.length - 30} 件...</div>`;
@@ -5443,23 +5548,44 @@ function refreshICSPreview() {
 
 function confirmICSImport() {
   if (icsMatchedMeetings.length === 0) { alert('取込対象の商談がありません'); return; }
-  let added = 0;
+  let added = 0, createdCustomers = 0;
+  const createdNames = [];
   for (const r of icsMatchedMeetings) {
+    let cId = r.customerId;
+    // 未マッチだが自動作成フラグが立っている場合、新規顧客を作成
+    if (!cId && r.autoCreate && r.companyName) {
+      const created = findOrCreateCustomerByName(r.companyName, { memo: 'カレンダー取込から自動追加' });
+      if (created) {
+        cId = created.customer.id;
+        if (created.created) { createdCustomers++; createdNames.push(r.companyName); }
+      }
+    }
+    if (!cId) continue; // それでもマッチしなければスキップ
     data.meetings.push({
       id: uid(),
-      customerId: r.customerId,
+      customerId: cId,
       date: r.date,
       time: r.time,
+      title: r.eventTitle || '',
+      memo: r.note || '',
       note: r.note,
       createdAt: new Date().toISOString(),
+      updatedAt: nowIso(),
       source: 'ics',
     });
     added++;
   }
   saveData();
+  refreshUserSelect();
+  refreshUserMetaDisplay();
   render();
   closeModal('icsModal');
-  alert(`✅ カレンダーから ${added} 件の商談を取り込みました`);
+  let msg = `✅ カレンダーから ${added} 件の商談を取り込みました`;
+  if (createdCustomers > 0) {
+    msg += `\n🆕 新規顧客 ${createdCustomers} 社を自動作成しました：\n  - ${createdNames.slice(0,5).join('\n  - ')}`;
+    if (createdNames.length > 5) msg += `\n  ...他${createdNames.length - 5}社`;
+  }
+  alert(msg);
 }
 
 // 期間・マッチングモード変更時に再計算
