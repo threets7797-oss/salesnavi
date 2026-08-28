@@ -1383,9 +1383,17 @@
       <div class="form-group">
         <label>請求日（毎月/毎年の何日か）</label>
         <input type="number" id="billingDay" min="1" max="31" placeholder="空欄=本登録日の日を使用">
-        <small style="color:#7f8c8d;font-size:0.75rem">月払い=毎月この日 / 年払い=毎年本登録月のこの日 に請求日として自動カレンダー表示</small>
+        <small style="color:#7f8c8d;font-size:0.75rem">月払い=毎月この日 / 年払い=下の設定に依存</small>
       </div>
-      <div class="form-group"></div>
+      <div class="form-group">
+        <label>年払いの請求タイミング</label>
+        <select id="yearlyBillingTiming">
+          <option value="same">本登録月と同じ日（従来）</option>
+          <option value="prev_month_1st">前月1日（前払い運用）</option>
+          <option value="prev_month_last">前月末日</option>
+        </select>
+        <small style="color:#7f8c8d;font-size:0.75rem">※ 支払い形態が「年払い」の時のみ有効</small>
+      </div>
     </div>
     <div class="form-group">
       <label>備考</label>
@@ -1990,6 +1998,7 @@ function loadData() {
         if (!c.updatedAt) c.updatedAt = c.createdAt || nowIso;
         if (!c.monthlySales || typeof c.monthlySales !== 'object') c.monthlySales = {}; // { "2026-08": 50000, ... }
         if (c.billingDay === undefined) c.billingDay = ''; // 請求日(1-31)、空なら本登録日の日を使う
+        if (c.yearlyBillingTiming === undefined) c.yearlyBillingTiming = 'same'; // 年払いの請求タイミング: 'same'(本登録月と同日)/'prev_month_1st'(前月1日)/'prev_month_last'(前月末日)
       });
       (parsed.meetings || []).forEach(m => {
         if (!m.updatedAt) m.updatedAt = m.createdAt || nowIso;
@@ -3485,6 +3494,7 @@ function openCustomerModal(customerId) {
     document.getElementById('billingAmount').value = c.billingAmount || '';
     document.getElementById('billingType').value = c.billingType || '';
     document.getElementById('billingDay').value = c.billingDay || '';
+    document.getElementById('yearlyBillingTiming').value = c.yearlyBillingTiming || 'same';
     document.getElementById('memo').value = c.memo || '';
     document.getElementById('ownerField').value = c.owner || '';
     document.getElementById('teamField').value = c.team || '';
@@ -3615,6 +3625,7 @@ function saveCustomer() {
     billingAmount: document.getElementById('billingAmount').value,
     billingType: document.getElementById('billingType').value,
     billingDay: document.getElementById('billingDay').value,
+    yearlyBillingTiming: document.getElementById('yearlyBillingTiming').value || 'same',
     memo: document.getElementById('memo').value.trim(),
     owner: document.getElementById('ownerField').value.trim(),
     team: document.getElementById('teamField').value.trim(),
@@ -4165,6 +4176,7 @@ function normalizeCustomer(c) {
     department: c.department || '',
     monthlySales: (c.monthlySales && typeof c.monthlySales === 'object') ? c.monthlySales : {},
     billingDay: c.billingDay || '',
+    yearlyBillingTiming: c.yearlyBillingTiming || 'same',
     updatedAt: c.updatedAt || c.createdAt || nowIso(),
   };
 }
@@ -4788,7 +4800,7 @@ function getBillingEventsForDate(dateStr) {
     }
     if (targetDay !== billingDay) return;
     if (c.billingType === 'monthly') {
-      // 毎月同じ日に請求
+      // 月払い: 毎月同じ日に請求（targetDay判定は既にbillingDay一致で通過）
       events.push({
         id: `billing-${c.id}-${dateStr}`,
         virtual: true,
@@ -4801,23 +4813,64 @@ function getBillingEventsForDate(dateStr) {
         memo: `月額 ¥${Number(c.billingAmount).toLocaleString()} の請求日`,
         stage: c.stage,
       });
-    } else if (c.billingType === 'yearly') {
-      // 年払い: 本登録月と同じ月・日
-      if (targetMonth === start.getMonth() + 1) {
-        events.push({
-          id: `billing-${c.id}-${dateStr}`,
-          virtual: true,
-          source: 'billing',
-          customerId: c.id,
-          customerName: c.companyName,
-          date: dateStr,
-          time: '',
-          title: `💴 ${c.companyName} 年次請求 (¥${Number(c.billingAmount).toLocaleString()})`,
-          memo: `年額 ¥${Number(c.billingAmount).toLocaleString()} の請求日`,
-          stage: c.stage,
-        });
-      }
     }
+  });
+
+  // 年払いは別ロジックで処理(タイミング設定に対応)
+  data.customers.forEach(c => {
+    if (!['成約', '本登録開始'].includes(c.stage)) return;
+    if (c.billingType !== 'yearly' || !c.billingAmount) return;
+    const start = c.registrationDate ? new Date(c.registrationDate + 'T00:00:00') : null;
+    if (!start) return;
+
+    const startMonth = start.getMonth() + 1; // 1-12
+    const startDay = start.getDate();
+    const timing = c.yearlyBillingTiming || 'same';
+
+    // 本登録日より前は請求なし(初回請求は最低でも本登録日〜)
+    // ただし前月1日などの場合、初回は本登録月の前月1日になるので、注意
+
+    let matches = false;
+    let firstBillingDate = null;
+
+    if (timing === 'same') {
+      // 本登録月・本登録日(またはbillingDay)
+      const bd = c.billingDay && !isNaN(parseInt(c.billingDay, 10)) ? parseInt(c.billingDay, 10) : startDay;
+      matches = (targetMonth === startMonth && targetDay === bd);
+      firstBillingDate = new Date(start.getFullYear(), startMonth - 1, bd);
+    } else if (timing === 'prev_month_1st') {
+      // 前月1日: 本登録月-1 の1日
+      const prevMonth = startMonth === 1 ? 12 : startMonth - 1;
+      matches = (targetMonth === prevMonth && targetDay === 1);
+      // 初回請求日を計算
+      const initialYear = startMonth === 1 ? start.getFullYear() - 1 : start.getFullYear();
+      firstBillingDate = new Date(initialYear, prevMonth - 1, 1);
+    } else if (timing === 'prev_month_last') {
+      // 前月末日
+      const prevMonth = startMonth === 1 ? 12 : startMonth - 1;
+      const prevMonthYear = startMonth === 1 ? targetDate.getFullYear() - 1 : targetDate.getFullYear();
+      const lastDay = new Date(prevMonthYear, prevMonth, 0).getDate();
+      matches = (targetMonth === prevMonth && targetDay === lastDay);
+      const initialYear = startMonth === 1 ? start.getFullYear() - 1 : start.getFullYear();
+      firstBillingDate = new Date(initialYear, prevMonth - 1, new Date(initialYear, prevMonth, 0).getDate());
+    }
+
+    if (!matches) return;
+    // 初回請求日より前は表示しない
+    if (firstBillingDate && targetDate < firstBillingDate) return;
+
+    events.push({
+      id: `billing-${c.id}-${dateStr}`,
+      virtual: true,
+      source: 'billing',
+      customerId: c.id,
+      customerName: c.companyName,
+      date: dateStr,
+      time: '',
+      title: `💴 ${c.companyName} 年次請求 (¥${Number(c.billingAmount).toLocaleString()})`,
+      memo: `年額 ¥${Number(c.billingAmount).toLocaleString()} の請求日${timing === 'prev_month_1st' ? '（前月1日運用）' : timing === 'prev_month_last' ? '（前月末日運用）' : ''}`,
+      stage: c.stage,
+    });
   });
   return events;
 }
