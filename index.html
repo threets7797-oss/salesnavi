@@ -1105,6 +1105,75 @@
     margin-left: 6px;
   }
 
+  /* 請求予定アラート（オレンジ） */
+  .billing-alert {
+    background: linear-gradient(135deg, #fed7aa 0%, #fdba74 100%);
+    border: 2px solid #f97316;
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin-bottom: 16px;
+    box-shadow: 0 2px 8px rgba(249,115,22,0.2);
+  }
+  .billing-alert.has-today {
+    animation: pulseAlert 2s ease-in-out infinite;
+    border-width: 3px;
+    border-color: #ea580c;
+  }
+  @keyframes pulseAlert {
+    0%, 100% { box-shadow: 0 2px 8px rgba(249,115,22,0.3); }
+    50% { box-shadow: 0 4px 20px rgba(249,115,22,0.7); transform: scale(1.005); }
+  }
+  .billing-alert-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    cursor: pointer;
+    user-select: none;
+  }
+  .billing-alert-header .lbl {
+    font-weight: 700;
+    color: #7c2d12;
+    font-size: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .billing-alert-header .badge {
+    background: #dc2626;
+    color: white;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.85rem;
+    font-weight: 700;
+  }
+  .billing-alert-header .today-badge {
+    background: #fef3c7;
+    color: #7c2d12;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 0.85rem;
+    font-weight: 700;
+    animation: blinkBadge 1.5s ease-in-out infinite;
+  }
+  @keyframes blinkBadge {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+  }
+  .billing-alert.collapsed .stale-alert-body { display: none; }
+
+  /* フォロー予定バナーも強化 */
+  #cadenceBanner.has-today {
+    animation: pulseFollow 2s ease-in-out infinite;
+    border-width: 3px;
+    border-color: #059669;
+  }
+  @keyframes pulseFollow {
+    0%, 100% { box-shadow: 0 2px 8px rgba(16,185,129,0.3); }
+    50% { box-shadow: 0 4px 20px rgba(16,185,129,0.7); transform: scale(1.005); }
+  }
+
   /* Pro/Free ロック表示 */
   .pro-only.locked {
     position: relative;
@@ -1166,6 +1235,18 @@
     </select>
     <button class="btn small secondary" onclick="openRoleManagerModal()" style="font-size:0.82rem">🔐 役職・利用者管理 ⭐</button>
     <div id="currentUserMeta" style="font-size:0.82rem;color:#2c3e50;font-weight:500"></div>
+  </div>
+
+  <!-- 請求予定アラート -->
+  <div class="billing-alert" id="billingAlert" style="display:none">
+    <div class="billing-alert-header" onclick="toggleBillingAlert()">
+      <div class="lbl">💴 <span>請求書発行予定</span> <span class="badge" id="billingAlertBadge">0</span></div>
+      <div style="display:flex;align-items:center;gap:12px">
+        <span id="billingTodayIndicator" style="display:none" class="today-badge">🔔 今日</span>
+        <span class="toggle-arrow" style="color:#7c2d12">▼</span>
+      </div>
+    </div>
+    <div class="stale-alert-body" id="billingAlertBody"></div>
   </div>
 
   <!-- フォローカデンス通知バナー -->
@@ -3079,6 +3160,14 @@ function renderCadenceBanner() {
   document.getElementById('cadenceBadge').textContent = `${total}件`;
 
   const today = new Date().toISOString().slice(0, 10);
+  // 今日のフォロー予定または実施期限超過があればパルスアニメーション
+  const hasTodayOrOverdue = overdue.length > 0 || upcoming.some(item => item.meeting.date === today);
+  if (hasTodayOrOverdue) {
+    banner.classList.add('has-today');
+  } else {
+    banner.classList.remove('has-today');
+  }
+
   let html = '';
   if (overdue.length > 0) {
     html += `<div style="margin-bottom:8px;font-weight:600;color:#991b1b;font-size:0.88rem">⏰ 実施期限超過 (${overdue.length}件)</div>`;
@@ -3114,6 +3203,123 @@ function renderCadenceItem(item, isOverdue) {
       <button class="btn small secondary" onclick="editAppointment('${m.id}')" title="編集">✎</button>
     </div>
   </div>`;
+}
+
+// ========== 請求書発行予定アラート ==========
+const BILLING_COLLAPSED_KEY = 'salesNaviBillingCollapsed_v1';
+
+function getUpcomingBillingEvents(withinDays) {
+  withinDays = withinDays || 14;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const results = [];
+  for (let i = 0; i <= withinDays; i++) {
+    const d = new Date(today);
+    d.setDate(d.getDate() + i);
+    const dateStr = d.toISOString().slice(0, 10);
+    const events = getBillingEventsForDate(dateStr);
+    events.forEach(ev => {
+      const c = data.customers.find(x => x.id === ev.customerId);
+      if (!c) return;
+      // 階層スコープに従うフィルタ
+      if (!matchesViewLevel(c)) return;
+      results.push({
+        date: dateStr,
+        customer: c,
+        event: ev,
+        daysFromToday: i,
+        isToday: i === 0,
+      });
+    });
+  }
+  return results;
+}
+
+function renderBillingAlerts() {
+  const banner = document.getElementById('billingAlert');
+  if (!banner) return;
+  const upcoming = getUpcomingBillingEvents(14); // 今日〜14日先
+  const badge = document.getElementById('billingAlertBadge');
+  const todayInd = document.getElementById('billingTodayIndicator');
+  const body = document.getElementById('billingAlertBody');
+  if (!badge || !body) return;
+
+  if (upcoming.length === 0) {
+    banner.style.display = 'none';
+    banner.classList.remove('has-today');
+    return;
+  }
+
+  banner.style.display = '';
+  badge.textContent = `${upcoming.length}件`;
+
+  const todayItems = upcoming.filter(u => u.isToday);
+  if (todayItems.length > 0) {
+    banner.classList.add('has-today');
+    todayInd.style.display = '';
+    todayInd.textContent = `🔔 今日${todayItems.length}件`;
+  } else {
+    banner.classList.remove('has-today');
+    todayInd.style.display = 'none';
+  }
+
+  // 折りたたみ状態を復元
+  if (localStorage.getItem(BILLING_COLLAPSED_KEY) === '1') {
+    banner.classList.add('collapsed');
+  } else {
+    banner.classList.remove('collapsed');
+  }
+
+  // グループ化: 今日 / 今週(1〜7日) / 8-14日
+  const groups = { today: [], week: [], later: [] };
+  upcoming.forEach(u => {
+    if (u.daysFromToday === 0) groups.today.push(u);
+    else if (u.daysFromToday <= 7) groups.week.push(u);
+    else groups.later.push(u);
+  });
+
+  let html = '';
+  if (groups.today.length > 0) {
+    html += `<div style="margin:8px 0 6px;font-weight:700;color:#7c2d12;font-size:0.95rem;background:#fef3c7;padding:8px 10px;border-radius:4px">🔔 <strong>今日発行するもの</strong> (${groups.today.length}件)</div>`;
+    html += groups.today.map(u => renderBillingItem(u)).join('');
+  }
+  if (groups.week.length > 0) {
+    html += `<div style="margin:12px 0 6px;font-weight:600;color:#9a3412;font-size:0.88rem">📅 今週の予定 (${groups.week.length}件)</div>`;
+    html += groups.week.map(u => renderBillingItem(u)).join('');
+  }
+  if (groups.later.length > 0) {
+    html += `<div style="margin:12px 0 6px;font-weight:600;color:#9a3412;font-size:0.88rem">📅 8-14日先 (${groups.later.length}件)</div>`;
+    html += groups.later.map(u => renderBillingItem(u)).join('');
+  }
+  body.innerHTML = html;
+}
+
+function renderBillingItem(u) {
+  const c = u.customer;
+  const amt = Number(c.billingAmount).toLocaleString();
+  const bt = c.billingType === 'monthly' ? '月額' : c.billingType === 'yearly' ? '年額' : '';
+  const dateLabel = u.isToday ? '本日' : `${u.daysFromToday}日後`;
+  const dateColor = u.isToday ? '#dc2626' : '#9a3412';
+  return `<div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;padding:10px 12px;background:white;border-radius:4px;margin-bottom:4px;border-left:3px solid #f97316">
+    <div>
+      <div style="font-weight:600;color:#2c3e50;font-size:0.95rem">🏢 ${escapeHtml(c.companyName)}</div>
+      <div style="color:#7f8c8d;font-size:0.82rem;margin-top:2px">
+        ${bt} <strong style="color:#7c2d12">¥${amt}</strong>
+        ${c.owner ? `／ 👤 ${escapeHtml(c.owner)}` : ''}
+        ${c.contactName ? `／ 先方 ${escapeHtml(c.contactName)}` : ''}
+      </div>
+    </div>
+    <div style="text-align:right;white-space:nowrap">
+      <div style="color:${dateColor};font-weight:700;font-size:1rem">${u.date}</div>
+      <div style="color:${dateColor};font-size:0.78rem;font-weight:600">${dateLabel}</div>
+    </div>
+  </div>`;
+}
+
+function toggleBillingAlert() {
+  const banner = document.getElementById('billingAlert');
+  if (!banner) return;
+  banner.classList.toggle('collapsed');
+  localStorage.setItem(BILLING_COLLAPSED_KEY, banner.classList.contains('collapsed') ? '1' : '0');
 }
 
 // ========== 放置案件アラート ==========
@@ -3359,6 +3565,7 @@ function renderSummary() {
 // ========== テーブル表示 ==========
 function render() {
   refreshStageTabCounts();
+  renderBillingAlerts();
   renderCadenceBanner();
   renderStaleAlerts();
   renderSummary();
