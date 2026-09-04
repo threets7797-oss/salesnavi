@@ -2958,6 +2958,8 @@ function generateCadenceForCustomer(customerId, options) {
   if (!isProEnabled()) return { added: 0, reason: 'PRO限定機能' };
   const c = data.customers.find(x => x.id === customerId);
   if (!c) return { added: 0, reason: '顧客が見つかりません' };
+  // 本登録済で12ヶ月経過はフォロー予定を生成しない
+  if (isRegisteredFollowExpired(c)) return { added: 0, reason: '本登録から12ヶ月経過のため対象外' };
 
   const tpl = loadCadenceTemplate();
   if (tpl.length === 0) return { added: 0, reason: 'カデンステンプレートが空' };
@@ -3038,6 +3040,7 @@ function getUpcomingCadenceEvents(withinDays) {
     })
     .filter(item => item.customer)
     .filter(item => matchesViewLevel(item.customer))
+    .filter(item => !isRegisteredFollowExpired(item.customer)) // 本登録12ヶ月経過は除外
     .sort((a, b) => a.meeting.date.localeCompare(b.meeting.date));
 }
 
@@ -3053,6 +3056,7 @@ function getOverdueCadenceEvents() {
     })
     .filter(item => item.customer)
     .filter(item => matchesViewLevel(item.customer))
+    .filter(item => !isRegisteredFollowExpired(item.customer)) // 本登録12ヶ月経過は除外
     .sort((a, b) => a.meeting.date.localeCompare(b.meeting.date));
 }
 
@@ -3326,6 +3330,21 @@ function toggleBillingAlert() {
 const STALE_THRESHOLD_KEY = 'salesDashboardStaleThreshold_v1';
 const STALE_COLLAPSED_KEY = 'salesDashboardStaleCollapsed_v1';
 
+// 本登録開始顧客のフォロー対象期間（本登録日から12ヶ月）
+const REGISTERED_FOLLOW_MONTHS = 12;
+
+// 本登録開始顧客で、本登録日から REGISTERED_FOLLOW_MONTHS ヶ月以上経過していれば、
+// フォロー対象外とする
+function isRegisteredFollowExpired(c) {
+  if (c.stage !== '本登録開始') return false;
+  if (!c.registrationDate) return false;
+  const regDate = new Date(c.registrationDate + 'T00:00:00');
+  const cutoff = new Date(regDate);
+  cutoff.setMonth(cutoff.getMonth() + REGISTERED_FOLLOW_MONTHS);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  return today > cutoff;
+}
+
 function getStaleCustomers(thresholdDays) {
   thresholdDays = thresholdDays || 30;
   const today = new Date();
@@ -3335,6 +3354,8 @@ function getStaleCustomers(thresholdDays) {
   scoped.forEach(c => {
     // 失注・契約終了 は対象外（クローズ済み案件はアラート不要）
     if (c.stage === '失注' || c.stage === '契約終了') return;
+    // 本登録済で12ヶ月経過は対象外（毎月出てくる問題対策）
+    if (isRegisteredFollowExpired(c)) return;
     // この顧客の全商談・予定（重複IDの分も含む）
     const ids = dedupeEnabled ? getCustomerIdsForCounting(c.id) : [c.id];
     const customerMeetings = data.meetings.filter(m => ids.includes(m.customerId) && m.date);
@@ -3451,6 +3472,7 @@ function toggleStaleAlert() {
 // 行ごとに放置判定するヘルパー
 function getCustomerStaleDays(c) {
   if (c.stage === '失注' || c.stage === '契約終了') return 0;
+  if (isRegisteredFollowExpired(c)) return 0; // 本登録12ヶ月経過は放置バッジも出さない
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const ids = dedupeEnabled ? getCustomerIdsForCounting(c.id) : [c.id];
   const meetings = data.meetings.filter(m => ids.includes(m.customerId) && m.date);
