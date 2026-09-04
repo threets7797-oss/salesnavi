@@ -2935,6 +2935,15 @@ const DEFAULT_CADENCE = [
   { daysAfter: 90, action: '復活提案', type: 'follow', note: '3ヶ月経過 - 状況変化のヒアリング・再提案' },
 ];
 
+// 本登録開始（成約後）のお客様用：定着フォローアップカデンス（本登録日基準）
+const DEFAULT_POST_REGISTER_CADENCE = [
+  { daysAfter: 30, action: '定着フォローアップ（1ヶ月）', type: 'follow', note: '立ち上がり確認・初期不明点のヒアリング' },
+  { daysAfter: 90, action: '定着フォローアップ（3ヶ月）', type: 'follow', note: '活用状況の確認・追加サポートの提案' },
+  { daysAfter: 180, action: '定着フォローアップ（6ヶ月）', type: 'follow', note: '満足度の確認・成果報告' },
+  { daysAfter: 270, action: '定着フォローアップ（9ヶ月）', type: 'follow', note: 'アップセル・クロスセルの機会確認' },
+  { daysAfter: 365, action: '定着フォローアップ（12ヶ月）', type: 'follow', note: '契約更新・年次レビュー' },
+];
+
 function loadCadenceTemplate() {
   try {
     const raw = localStorage.getItem(CADENCE_KEY);
@@ -2944,6 +2953,31 @@ function loadCadenceTemplate() {
 }
 function saveCadenceTemplate(tpl) {
   localStorage.setItem(CADENCE_KEY, JSON.stringify(tpl));
+}
+
+const POST_REGISTER_CADENCE_KEY = 'salesNaviPostRegisterCadence_v1';
+function loadPostRegisterCadence() {
+  try {
+    const raw = localStorage.getItem(POST_REGISTER_CADENCE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return DEFAULT_POST_REGISTER_CADENCE.slice();
+}
+function savePostRegisterCadence(tpl) {
+  localStorage.setItem(POST_REGISTER_CADENCE_KEY, JSON.stringify(tpl));
+}
+
+// 既存のカデンス予定(【F】タグ付き・未完了・未来)を削除
+function clearPendingCadenceForCustomer(customerId) {
+  const today = new Date().toISOString().slice(0, 10);
+  const ids = dedupeEnabled ? getCustomerIdsForCounting(customerId) : [customerId];
+  data.meetings = data.meetings.filter(m => {
+    if (!ids.includes(m.customerId)) return true;
+    if (m.source !== 'cadence') return true;
+    if (m.cadenceCompleted) return true; // 完了済みは残す
+    if (m.date && m.date < today) return true; // 過去分は残す
+    return false; // 未来の未完了カデンスは削除
+  });
 }
 
 function isCadenceAutoEnabled() {
@@ -2961,21 +2995,30 @@ function generateCadenceForCustomer(customerId, options) {
   // 本登録済で12ヶ月経過はフォロー予定を生成しない
   if (isRegisteredFollowExpired(c)) return { added: 0, reason: '本登録から12ヶ月経過のため対象外' };
 
-  const tpl = loadCadenceTemplate();
+  // 本登録開始のお客様は「定着フォローアップ」カデンス（本登録日基準）
+  const isPostRegister = c.stage === '本登録開始' && c.registrationDate;
+  const tpl = isPostRegister
+    ? (loadPostRegisterCadence())
+    : loadCadenceTemplate();
   if (tpl.length === 0) return { added: 0, reason: 'カデンステンプレートが空' };
 
-  // 初回接点日を決定：初回商談日 > 顧客登録日
+  // アンカー日決定
+  // - 本登録開始: 本登録日
+  // - その他: 初回商談日 > 顧客登録日
   const ids = dedupeEnabled ? getCustomerIdsForCounting(customerId) : [customerId];
-  const customerMeetings = data.meetings.filter(m => ids.includes(m.customerId) && m.date);
   let anchorDate = null;
-  if (customerMeetings.length > 0) {
-    // 最も古い商談日
-    const sorted = customerMeetings.slice().sort((a, b) => a.date.localeCompare(b.date));
-    anchorDate = sorted[0].date;
-  } else if (options && options.anchorDate) {
-    anchorDate = options.anchorDate;
+  if (isPostRegister) {
+    anchorDate = c.registrationDate;
   } else {
-    anchorDate = new Date().toISOString().slice(0, 10);
+    const customerMeetings = data.meetings.filter(m => ids.includes(m.customerId) && m.date);
+    if (customerMeetings.length > 0) {
+      const sorted = customerMeetings.slice().sort((a, b) => a.date.localeCompare(b.date));
+      anchorDate = sorted[0].date;
+    } else if (options && options.anchorDate) {
+      anchorDate = options.anchorDate;
+    } else {
+      anchorDate = new Date().toISOString().slice(0, 10);
+    }
   }
 
   const anchor = new Date(anchorDate + 'T00:00:00');
@@ -3905,17 +3948,33 @@ function saveCustomer() {
     setUserRole(customer.owner, role);
   }
   const isNewCustomer = !editingCustomerId;
+  let stageChangedToRegistered = false;
   if (editingCustomerId) {
     const idx = data.customers.findIndex(x => x.id === editingCustomerId);
-    if (idx >= 0) data.customers[idx] = { ...data.customers[idx], ...customer };
+    if (idx >= 0) {
+      const oldStage = data.customers[idx].stage;
+      if (oldStage !== '本登録開始' && customer.stage === '本登録開始') {
+        stageChangedToRegistered = true;
+      }
+      data.customers[idx] = { ...data.customers[idx], ...customer };
+    }
   } else {
     data.customers.push(customer);
+    if (customer.stage === '本登録開始') stageChangedToRegistered = true;
   }
   saveData();
 
-  // Pro有効かつ自動生成ONで新規顧客ならカデンスを生成
-  if (isNewCustomer && isProEnabled() && isCadenceAutoEnabled()) {
-    generateCadenceForCustomer(customer.id);
+  // Pro有効かつ自動生成ONで、新規顧客 or 本登録開始遷移時にカデンスを生成
+  if (isProEnabled() && isCadenceAutoEnabled()) {
+    if (stageChangedToRegistered) {
+      // 本登録開始に切替 → 既存カデンスを削除して定着フォロー版を生成
+      clearPendingCadenceForCustomer(customer.id);
+      const c = data.customers.find(x => x.id === customer.id);
+      if (c) c.cadenceGenerated = false;
+      generateCadenceForCustomer(customer.id);
+    } else if (isNewCustomer) {
+      generateCadenceForCustomer(customer.id);
+    }
   }
 
   refreshUserSelect();
@@ -3938,6 +3997,7 @@ function deleteCustomer(id) {
 function changeStage(id, newStage) {
   const c = data.customers.find(x => x.id === id);
   if (!c) return;
+  const wasNotRegistered = c.stage !== '本登録開始';
   c.stage = newStage;
   // ステージに応じて日付を自動設定
   if (newStage === 'トライアル開始' && !c.trialStartDate) {
@@ -3947,6 +4007,12 @@ function changeStage(id, newStage) {
     c.registrationDate = new Date().toISOString().slice(0, 10);
   }
   c.updatedAt = nowIso();
+  // 本登録開始に遷移した場合、既存の未来カデンスを削除して定着フォローアップを再生成
+  if (wasNotRegistered && newStage === '本登録開始' && isProEnabled() && isCadenceAutoEnabled()) {
+    clearPendingCadenceForCustomer(id);
+    c.cadenceGenerated = false;
+    generateCadenceForCustomer(id);
+  }
   saveData();
   render();
 }
