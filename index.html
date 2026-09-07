@@ -3113,6 +3113,21 @@ function markCadenceCompleted(meetingId, completed) {
   render();
 }
 
+// インポート後、まだカデンスが生成されていない顧客に対して一括生成（自動、確認なし）
+function autoGenerateCadenceForImported() {
+  if (!isProEnabled()) return { targetCount: 0, totalAdded: 0 };
+  if (!isCadenceAutoEnabled()) return { targetCount: 0, totalAdded: 0 };
+  let totalAdded = 0, targetCount = 0;
+  data.customers.forEach(c => {
+    if (c.cadenceGenerated) return;
+    if (c.stage === '失注' || c.stage === '契約終了') return;
+    if (isRegisteredFollowExpired(c)) return;
+    const r = generateCadenceForCustomer(c.id);
+    if (r.added > 0) { totalAdded += r.added; targetCount++; }
+  });
+  return { targetCount, totalAdded };
+}
+
 // 全既存顧客に対して一括でカデンスを生成
 function bulkGenerateCadence() {
   if (!requirePro('カデンス一括生成')) return;
@@ -4691,17 +4706,22 @@ function confirmImport() {
     });
   }
 
+  // インポート後、未生成の顧客にカデンスを自動生成
+  const cadenceResult = autoGenerateCadenceForImported();
   saveData();
   refreshUserSelect();
   refreshUserMetaDisplay();
   closeImportModal();
   render();
+  let cadenceMsg = cadenceResult.targetCount > 0
+    ? `\n\n🔄 フォローアップ予定を ${cadenceResult.targetCount} 社に対して ${cadenceResult.totalAdded} 件生成しました`
+    : '';
   if (mode === 'merge') {
-    alert(`✅ 賢いマージ完了\n\n顧客: 追加${mergeStats.custAdded}件 / 更新${mergeStats.custUpdated}件 / スキップ${mergeStats.custSkipped}件\n商談: 追加${mergeStats.meetAdded}件 / 更新${mergeStats.meetUpdated}件 / スキップ${mergeStats.meetSkipped}件`);
+    alert(`✅ 賢いマージ完了\n\n顧客: 追加${mergeStats.custAdded}件 / 更新${mergeStats.custUpdated}件 / スキップ${mergeStats.custSkipped}件\n商談: 追加${mergeStats.meetAdded}件 / 更新${mergeStats.meetUpdated}件 / スキップ${mergeStats.meetSkipped}件${cadenceMsg}`);
   } else if (mode === 'replace') {
-    alert(`✅ 全置換完了\n顧客: ${data.customers.length}件 / 商談: ${data.meetings.length}件`);
+    alert(`✅ 全置換完了\n顧客: ${data.customers.length}件 / 商談: ${data.meetings.length}件${cadenceMsg}`);
   } else {
-    alert(`✅ 追加完了\n顧客: ${mergeStats.custAdded}件 / 商談: ${mergeStats.meetAdded}件 を追加しました`);
+    alert(`✅ 追加完了\n顧客: ${mergeStats.custAdded}件 / 商談: ${mergeStats.meetAdded}件 を追加しました${cadenceMsg}`);
   }
 }
 
@@ -6017,6 +6037,8 @@ function confirmICSImport() {
     });
     added++;
   }
+  // 新規顧客作成があればカデンスも自動生成
+  const cadenceResult = autoGenerateCadenceForImported();
   saveData();
   refreshUserSelect();
   refreshUserMetaDisplay();
@@ -6026,6 +6048,9 @@ function confirmICSImport() {
   if (createdCustomers > 0) {
     msg += `\n🆕 新規顧客 ${createdCustomers} 社を自動作成しました：\n  - ${createdNames.slice(0,5).join('\n  - ')}`;
     if (createdNames.length > 5) msg += `\n  ...他${createdNames.length - 5}社`;
+  }
+  if (cadenceResult.targetCount > 0) {
+    msg += `\n\n🔄 フォローアップ予定を ${cadenceResult.targetCount} 社に対して ${cadenceResult.totalAdded} 件生成しました`;
   }
   alert(msg);
 }
